@@ -1,0 +1,115 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+contract SafeMarketplace {
+    enum ProductStatus { Available, Sold, Disputed }
+    enum DisputeStatus { NoDispute, Resolved, Unresolved }
+
+    struct Product {
+        address payable seller;
+        string name;
+        string description;
+        uint256 price;
+        ProductStatus status;
+        DisputeStatus disputeStatus;
+    }
+
+    struct Purchase {
+        address payable buyer;
+        Product product;
+    }
+
+    mapping(uint256 => Purchase) public purchases;
+    mapping(address => uint256[]) public sellerProducts;
+    uint256 public productCount;
+    uint256 public disputeCount;
+    address public owner;
+
+    event ProductAdded(uint256 productId, string name, string description, uint256 price);
+    event ProductPurchased(uint256 productId, address buyer);
+    event DisputeRaised(uint256 productId, address buyer);
+    event DisputeResolved(uint256 productId);
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only owner can perform this action");
+        _;
+    }
+
+    constructor() {
+        owner = msg.sender;
+    }
+
+    function addProduct(string memory _name, string memory _description, uint256 _price) external {
+        require(bytes(_name).length > 0 && bytes(_description).length > 0, "Name and description are required");
+        require(_price > 0, "Price must be greater than zero");
+
+        uint256 productId = productCount++;
+        Product memory newProduct = Product({
+            seller: payable(msg.sender),
+            name: _name,
+            description: _description,
+            price: _price,
+            status: ProductStatus.Available,
+            disputeStatus: DisputeStatus.NoDispute
+        });
+        purchases[productId] = Purchase({
+            buyer: payable(address(0)),
+            product: newProduct
+        });
+        sellerProducts[msg.sender].push(productId);
+
+        emit ProductAdded(productId, _name, _description, _price);
+    }
+
+    function purchaseProduct(uint256 _productId) external payable {
+        require(_productId < productCount, "Invalid product ID");
+        Product storage product = purchases[_productId].product;
+        require(product.status == ProductStatus.Available, "Product not available");
+        require(msg.value >= product.price, "Insufficient funds");
+
+        product.status = ProductStatus.Sold;
+        purchases[_productId].buyer = payable(msg.sender);
+
+        emit ProductPurchased(_productId, msg.sender);
+    }
+
+    function raiseDispute(uint256 _productId) external {
+        require(_productId < productCount, "Invalid product ID");
+        Product storage product = purchases[_productId].product;
+        require(product.status == ProductStatus.Sold, "Product not sold");
+        require(msg.sender == purchases[_productId].buyer, "Only the buyer can raise a dispute");
+
+        product.disputeStatus = DisputeStatus.Unresolved;
+        disputeCount++;
+
+        emit DisputeRaised(_productId, msg.sender);
+    }
+
+    function resolveDispute(uint256 _productId) external onlyOwner {
+        require(_productId < productCount, "Invalid product ID");
+        Product storage product = purchases[_productId].product;
+        require(product.disputeStatus == DisputeStatus.Unresolved, "No dispute or already resolved");
+
+        product.status = ProductStatus.Available;
+        product.disputeStatus = DisputeStatus.Resolved;
+
+        // Refund buyer
+        (bool success, ) = purchases[_productId].buyer.call{value: product.price}("");
+        require(success, "Transfer failed");
+
+        emit DisputeResolved(_productId);
+    }
+
+    function getSellerProducts(address _seller) external view returns (uint256[] memory) {
+        return sellerProducts[_seller];
+    }
+
+    // Owner functions
+    function withdrawBalance() external onlyOwner {
+        uint256 balance = address(this).balance;
+        (bool success, ) = owner.call{value: balance}("");
+        require(success, "Withdrawal failed");
+    }
+
+    receive() external payable {}
+}
